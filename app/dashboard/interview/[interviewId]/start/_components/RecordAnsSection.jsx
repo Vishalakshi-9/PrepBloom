@@ -6,14 +6,14 @@ import Webcam from 'react-webcam';
 import useSpeechToText from 'react-hook-speech-to-text';
 import { Mic } from 'lucide-react';
 import { toast } from 'sonner';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { UserAnswer } from '@/utils/schema';
 import { useUser } from '@clerk/nextjs';
 import { db } from '@/utils/db';
 import moment from 'moment';
 
 // Initialize Gemini client
-const genAI = new GoogleGenerativeAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY });
 
 function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, interviewData }) {
   const [userAnswer, setUserAnswer] = useState('');
@@ -23,8 +23,9 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
 
   const {
     error,
-    results,
+    interimResult,
     isRecording,
+    results,
     startSpeechToText,
     stopSpeechToText,
     setResults
@@ -33,19 +34,19 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
     useLegacyResults: false
   });
 
-  // Live update the user's spoken answer
+  // Update userAnswer with the latest transcript
   useEffect(() => {
     setUserAnswer(results.map(r => r.transcript).join(' '));
   }, [results]);
 
-  // Auto submit after recording stops, only once per recording
+  // Auto-submit after recording stops, only once per session
   useEffect(() => {
     if (!isRecording && userAnswer.length > 10 && !submitted) {
       setSubmitted(true);
       UpdateUserAnswer();
     }
     // eslint-disable-next-line
-  }, [isRecording]); // Only run when recording stops
+  }, [isRecording]);
 
   const StartStopRecording = () => {
     if (isRecording) {
@@ -59,47 +60,78 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
   };
 
   const UpdateUserAnswer = async () => {
+    if (!userAnswer || userAnswer.length < 10) {
+      toast.error("Please record a longer answer.");
+      return;
+    }
+    if (!user?.primaryEmailAddress?.emailAddress) {
+      toast.error("User email is missing.");
+      return;
+    }
     setLoading(true);
 
     const feedbackPrompt = `
-    Question: ${mockInterviewQuestion[activeQuestionIndex]?.question}
-    User Answer: ${userAnswer}
-    Based on the above, provide a rating (out of 5) and 2-3 lines of feedback for improvement in JSON format:
-    {"rating": "x", "feedback": "..."}. Only respond with valid JSON.
-    `;
+Question: ${mockInterviewQuestion[activeQuestionIndex]?.question}
+User Answer: ${userAnswer}
+Based on the above, provide a rating (out of 5) and 2-3 lines of feedback for improvement in JSON format:
+{ "rating": "x", "feedback": "..." }
+Respond ONLY with valid JSON. No extra text.
+`;
 
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-      const result = await model.generateContent(feedbackPrompt);
-      const rawText = await result.response.text();
-
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: feedbackPrompt,
+      });
+      const rawText = response.text;
       const cleaned = rawText
         .replace(/```json/g, '')
         .replace(/```/g, '')
         .trim();
 
-      const parsed = JSON.parse(cleaned);
+      let JsonFeedbackResp;
+      try {
+        JsonFeedbackResp = JSON.parse(cleaned);
+      } catch (err) {
+        // Try to extract JSON substring if parsing fails
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) {
+          JsonFeedbackResp = JSON.parse(match[0]);
+        } else {
+          toast.error("Could not parse AI feedback. Try again.");
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Validate required fields before insert
+      if (!interviewData?.mockId || !mockInterviewQuestion[activeQuestionIndex]?.question || !user?.primaryEmailAddress?.emailAddress) {
+        toast.error("Missing required data for saving answer.");
+        setLoading(false);
+        return;
+      }
 
       const resp = await db.insert(UserAnswer).values({
-        mockIdRef: interviewData?.mockId,
-        question: mockInterviewQuestion[activeQuestionIndex]?.question,
-        correctAns: mockInterviewQuestion[activeQuestionIndex]?.answer,
+        mockIdRef: interviewData.mockId,
+        question: mockInterviewQuestion[activeQuestionIndex].question,
+        correctAns: mockInterviewQuestion[activeQuestionIndex].answer,
         userAns: userAnswer,
-        feedback: parsed?.feedback,
-        rating: parsed?.rating,
-        userEmail: user?.primaryEmailAddress?.emailAddress,
-        createdAt: moment().format('DD-MM-YYYY')
+        feedback: JsonFeedbackResp?.feedback,
+        rating: JsonFeedbackResp?.rating,
+        userEmail: user.primaryEmailAddress.emailAddress,
+        createdAt: moment().format('DD-MM-yyyy')
       });
 
       if (resp) {
-        toast.success('Your answer and feedback were saved successfully!');
+        toast.success('User Answer recorded successfully!');
         setUserAnswer('');
         setResults([]);
+      } else {
+        toast.error('Failed to insert answer into database.');
       }
-
     } catch (err) {
+      toast.error('Error getting feedback from AI or saving to DB');
       console.error(err);
-      toast.error('Failed to get feedback. Please try again.');
     } finally {
       setLoading(false);
     }
