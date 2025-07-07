@@ -74,7 +74,7 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
       const rawText = await result.response.text();
 
       const cleaned = rawText
-        .replace(/```
+        .replace(/```json/g, '')
         .replace(/```/g, '')
         .trim();
 
