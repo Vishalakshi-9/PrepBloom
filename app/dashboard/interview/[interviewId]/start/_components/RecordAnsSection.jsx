@@ -6,7 +6,7 @@ import Webcam from 'react-webcam';
 import useSpeechToText from 'react-hook-speech-to-text';
 import { Mic } from 'lucide-react';
 import { toast } from 'sonner';
-import { GoogleGenerativeAI } from "@google/generative-ai"; // Fixed name
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { UserAnswer } from '@/utils/schema';
 import { useUser } from '@clerk/nextjs';
 import { db } from '@/utils/db';
@@ -19,6 +19,7 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
   const [userAnswer, setUserAnswer] = useState('');
   const { user } = useUser();
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
 
   const {
     error,
@@ -37,12 +38,14 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
     setUserAnswer(results.map(r => r.transcript).join(' '));
   }, [results]);
 
-  // Auto submit after recording stops
+  // Auto submit after recording stops, only once per recording
   useEffect(() => {
-    if (!isRecording && userAnswer.length > 10) {
+    if (!isRecording && userAnswer.length > 10 && !submitted) {
+      setSubmitted(true);
       UpdateUserAnswer();
     }
-  }, [userAnswer]);
+    // eslint-disable-next-line
+  }, [isRecording]); // Only run when recording stops
 
   const StartStopRecording = () => {
     if (isRecording) {
@@ -50,6 +53,7 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
     } else {
       setUserAnswer('');
       setResults([]);
+      setSubmitted(false); // Reset for new recording
       startSpeechToText();
     }
   };
@@ -70,7 +74,7 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
       const rawText = await result.response.text();
 
       const cleaned = rawText
-        .replace(/```json/g, '')
+        .replace(/```
         .replace(/```/g, '')
         .trim();
 
@@ -95,7 +99,7 @@ function RecordAnsSection({ mockInterviewQuestion, activeQuestionIndex, intervie
 
     } catch (err) {
       console.error(err);
-      toast.error(' Failed to get feedback. Please try again.');
+      toast.error('Failed to get feedback. Please try again.');
     } finally {
       setLoading(false);
     }
